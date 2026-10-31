@@ -66,6 +66,8 @@ h2 { font-family: var(--f-display); font-weight: 600; font-size: 15px; letter-sp
 .legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; }
 #chart { width: 100%; height: 300px; display: block; }
 [hidden] { display: none !important; }
+.feedpick { display: flex; align-items: center; gap: 6px; }
+.feedpick select { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: 12px var(--f-body); max-width: 220px; }
 #tv { width: 100%; height: 540px; border-radius: 4px; overflow: hidden; }
 @media (max-width: 600px) { #tv { height: 420px; } }
 #chart text { font-family: var(--f-mono); font-size: 10.5px; fill: var(--muted); }
@@ -131,10 +133,12 @@ tr.zero td { background: rgba(242,169,59,.07); }
       <div class="stat"><span class="k">24h range</span><span class="v" id="r24">—</span></div>
       <div class="stat"><span class="k">7d range</span><span class="v" id="r7">—</span></div>
       <div class="stat"><span class="k">Typical 4h move</span><span class="v" id="atrv">—</span></div>
+      <div class="stat" id="fundstat" hidden><span class="k">Mark · funding / 8h</span><span class="v" id="fund">—</span></div>
     </div>
     <div class="source">
       <span class="pill" id="srcpill"><span class="dot"></span><span id="srctext">Connecting</span></span>
       <span class="note" id="updated">Waiting for data</span>
+      <label class="feedpick"><span class="note">Price feed</span><select id="feed" aria-label="Price feed"></select></label>
     </div>
   </section>
 
@@ -306,6 +310,8 @@ tr.zero td { background: rgba(242,169,59,.07); }
     $("r7").textContent = `${usd(A.lo7)} – ${usd(A.hi7)}`;
     $("atrv").textContent = `±${usd(A.atr)} (${(A.atr / A.px * 100).toFixed(2)}%)`;
     document.title = `${usd(A.px)} · BTC Paper Desk`;
+    $("fundstat").hidden = !(M.mark > 0);
+    if (M.mark > 0) $("fund").innerHTML = `${usd(M.mark, 1)} · <span class="${cls(-M.funding)}">${M.funding == null ? "—" : (M.funding * 100).toFixed(4) + "%"}</span>`;
 
     const call = { long: ["LONG", "up"], short: ["SHORT", "down"], wait: ["WAIT", "muted"] }[A.bias];
     $("call").textContent = call[0]; $("call").className = "call " + call[1];
@@ -531,19 +537,91 @@ tr.zero td { background: rgba(242,169,59,.07); }
       try { const sets2 = await Promise.all(tfs.map(cbCandles)); tfs.forEach((g, i) => { M.c[g] = sets2[i]; }); tick(M.price, M.updated); } catch (e) {}
     }, 300000);
   }
+  // Live price feeds: public exchange websockets, no keys. Each parse() returns {price, t, change, hi, lo, mark, funding} (fields optional).
+  const FEEDS = {
+    coinbase: {
+      name: "Coinbase · BTC-USD spot", url: "wss://ws-feed.exchange.coinbase.com",
+      sub: [{ type: "subscribe", product_ids: ["BTC-USD"], channels: ["ticker"] }],
+      parse: (m) => m.type === "ticker" && { price: +m.price, t: Date.parse(m.time), change: (+m.price / +m.open_24h - 1) * 100, hi: +m.high_24h, lo: +m.low_24h },
+    },
+    kraken: {
+      name: "Kraken · BTC/USD spot", url: "wss://ws.kraken.com/v2",
+      sub: [{ method: "subscribe", params: { channel: "ticker", symbol: ["BTC/USD"] } }],
+      parse: (m) => m.channel === "ticker" && m.data && m.data[0] && { price: +m.data[0].last, change: +m.data[0].change_pct, hi: +m.data[0].high, lo: +m.data[0].low },
+    },
+    bybit: {
+      name: "Bybit · BTCUSDT perpetual", url: "wss://stream.bybit.com/v5/public/linear",
+      sub: [{ op: "subscribe", args: ["tickers.BTCUSDT"] }], ping: [{ op: "ping" }, 20000],
+      parse: (m, st) => {
+        if (m.topic !== "tickers.BTCUSDT" || !m.data) return false;
+        Object.assign(st, m.data);
+        return { price: +st.lastPrice, t: m.ts, change: +st.price24hPcnt * 100, hi: +st.highPrice24h, lo: +st.lowPrice24h, mark: +st.markPrice, funding: +st.fundingRate };
+      },
+    },
+    okx: {
+      name: "OKX · BTC-USDT perpetual", url: "wss://ws.okx.com:8443/ws/v5/public",
+      sub: [{ op: "subscribe", args: [{ channel: "tickers", instId: "BTC-USDT-SWAP" }, { channel: "funding-rate", instId: "BTC-USDT-SWAP" }, { channel: "mark-price", instId: "BTC-USDT-SWAP" }] }],
+      ping: ["ping", 25000],
+      parse: (m, st) => {
+        const ch = m.arg && m.arg.channel, d = m.data && m.data[0];
+        if (!d) return false;
+        if (ch === "funding-rate") { st.funding = +d.fundingRate; return false; }
+        if (ch === "mark-price") { st.mark = +d.markPx; return false; }
+        if (ch !== "tickers") return false;
+        return { price: +d.last, t: +d.ts, change: (+d.last / +d.open24h - 1) * 100, hi: +d.high24h, lo: +d.low24h, mark: st.mark, funding: st.funding };
+      },
+    },
+    binance: {
+      name: "Binance · BTCUSDT perpetual", url: "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@markPrice@1s/btcusdt@ticker",
+      sub: [],
+      parse: (m, st) => {
+        const s = m.stream || "", d = m.data || {};
+        if (s.endsWith("@markPrice@1s")) { st.mark = +d.p; st.funding = +d.r; return false; }
+        if (s.endsWith("@ticker")) { st.change = +d.P; st.hi = +d.h; st.lo = +d.l; return false; }
+        if (!s.endsWith("@aggTrade")) return false;
+        return { price: +d.p, t: d.T, change: st.change, hi: st.hi, lo: st.lo, mark: st.mark, funding: st.funding };
+      },
+    },
+  };
+  const ORDER = ["coinbase", "kraken", "bybit", "okx", "binance"];
+  let feedKey = "coinbase", ws = null, wsGen = 0, lastTick = 0, watchdog = null;
+  try { const k = localStorage.getItem("btcpaper.feed"); if (FEEDS[k]) feedKey = k; } catch (e) {}
+  $("feed").innerHTML = ORDER.map((k) => `<option value="${k}">${FEEDS[k].name}</option>`).join("");
+  $("feed").value = feedKey;
+  $("feed").onchange = () => { feedKey = $("feed").value; try { localStorage.setItem("btcpaper.feed", feedKey); } catch (e) {} connectWS(); };
+
   function connectWS() {
-    let ws;
-    try { ws = new WebSocket("wss://ws-feed.exchange.coinbase.com"); } catch (e) { setSource("error", "Live feed blocked"); return; }
-    ws.onopen = () => ws.send(JSON.stringify({ type: "subscribe", product_ids: ["BTC-USD"], channels: ["ticker"] }));
-    ws.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.type !== "ticker") return;
-      if (source !== "live") setSource("live", "Live · every trade");
-      if (+m.open_24h) M.change = (+m.price / +m.open_24h - 1) * 100;
-      if (+m.high_24h) { M.hi24 = +m.high_24h; M.lo24 = +m.low_24h; }
-      tick(+m.price, m.time ? Date.parse(m.time) : Date.now());
+    const gen = ++wsGen, F = FEEDS[feedKey], st = {};
+    if (ws) { try { ws.close(); } catch (e) {} }
+    clearTimeout(watchdog);
+    setSource("snapshot", "Connecting · " + F.name.split(" · ")[0]);
+    let pinger = null;
+    try { ws = new WebSocket(F.url); } catch (e) { return nextFeed(gen); }
+    ws.onopen = () => {
+      F.sub.forEach((s) => ws.send(JSON.stringify(s)));
+      if (F.ping) pinger = setInterval(() => { try { ws.send(typeof F.ping[0] === "string" ? F.ping[0] : JSON.stringify(F.ping[0])); } catch (e) {} }, F.ping[1]);
     };
-    ws.onclose = () => { setSource("error", "Reconnecting"); setTimeout(connectWS, 3000); };
+    ws.onmessage = (e) => {
+      if (gen !== wsGen || e.data === "pong") return;
+      let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+      const q = F.parse(m, st);
+      if (!q || !(q.price > 0)) return;
+      lastTick = Date.now();
+      if (source !== "live") setSource("live", "Live · " + F.name.split(" · ")[0]);
+      if (isFinite(q.change)) M.change = q.change;
+      if (q.hi > 0) { M.hi24 = q.hi; M.lo24 = q.lo; }
+      M.mark = q.mark > 0 ? q.mark : null; M.funding = isFinite(q.funding) ? q.funding : null;
+      tick(q.price, q.t > 0 ? q.t : Date.now());
+    };
+    ws.onclose = () => { clearInterval(pinger); if (gen === wsGen) { setSource("error", "Reconnecting"); setTimeout(() => { if (gen === wsGen) connectWS(); }, 3000); } };
+    // no trade within 10 s: move to the next exchange
+    watchdog = setTimeout(() => { if (gen === wsGen && Date.now() - lastTick > 10000) nextFeed(gen); }, 10000);
+  }
+  function nextFeed(gen) {
+    if (gen !== wsGen) return;
+    feedKey = ORDER[(ORDER.indexOf(feedKey) + 1) % ORDER.length];
+    $("feed").value = feedKey;
+    connectWS();
   }
 
   // CoinGecko and the Claude snapshot share one shape: 5m prices + 4h candles
@@ -557,7 +635,8 @@ tr.zero td { background: rgba(242,169,59,.07); }
     const [spot, mc, ohlc] = await Promise.all([spotNow(), getJSON(`${CG}/coins/bitcoin/market_chart?vs_currency=usd&days=1`), getJSON(`${CG}/coins/bitcoin/ohlc?vs_currency=usd&days=14`)]);
     M = geckoM(spot, mc.prices, ohlc);
     chartTf = 300; setSource("live", "Live · every 20s"); buildTabs(); render(); showUpdated();
-    setInterval(async () => { try { const s = await spotNow(); M.change = s.change; tick(s.price, s.updated); setSource("live", "Live · every 20s"); } catch (e) { setSource("error", "Rate limited, retrying"); } }, 20000);
+    connectWS();
+    setInterval(async () => { if (Date.now() - lastTick < 30000) return; try { const s = await spotNow(); M.change = s.change; tick(s.price, s.updated); setSource("live", "Live · every 20s"); } catch (e) { setSource("error", "Rate limited, retrying"); } }, 20000);
   }
   async function startSnapshot() {
     const db = window.claude && window.claude.use ? await window.claude.use("db") : null;
