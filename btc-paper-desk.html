@@ -139,11 +139,8 @@ tr.zero td { background: rgba(242,169,59,.07); }
     <div class="col">
       <section class="panel">
         <div class="chart-head">
-          <h2 id="charttitle">Last 24 hours · 5-minute</h2>
-          <div class="tabs" role="group" aria-label="Chart range">
-            <button id="tab24" aria-pressed="true">24h</button>
-            <button id="tab14" aria-pressed="false">14d</button>
-          </div>
+          <h2 id="charttitle">Chart</h2>
+          <div class="tabs" role="group" aria-label="Chart timeframe" id="tabs"></div>
         </div>
         <svg id="chart" role="img" aria-label="BTC price chart"></svg>
         <div class="legend">
@@ -211,16 +208,20 @@ tr.zero td { background: rgba(242,169,59,.07); }
 
 <script>
 (() => {
-  const API = "https://api.coingecko.com/api/v3";
+  const CB = "https://api.exchange.coinbase.com";
+  const CG = "https://api.coingecko.com/api/v3";
   const $ = (id) => document.getElementById(id);
   const usd = (x, d = 0) => "$" + Number(x).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
   const sgn = (x) => (x < 0 ? "−$" : "+$") + Math.abs(x).toFixed(2);
   const pct = (x, d = 2) => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(d) + "%";
   const cls = (x) => (x > 0 ? "up" : x < 0 ? "down" : "muted");
+  const TF = { 60: "1m", 300: "5m", 900: "15m", 3600: "1h", 14400: "4h" };
+  const SHOW = { 60: 180, 300: 144, 900: 96, 3600: 168, 14400: 84 };
 
-  let M = null;          // { price, change, updated, m5: [[t,p]], h4: [[t,o,h,l,c]] }
-  let source = null;     // "live" | "snapshot"
-  let chartMode = "24h";
+  // M: { price, change, updated, hi24, lo24, c: {tf: [[t,o,h,l,c]]}, tfs, htf, htfName, scale, line: [tfs drawn as a line] }
+  let M = null;
+  let chartTf = 300;
+  let lastShown = null;
   const KEY = "btcpaper.v1";
 
   /* ---------- paper state (this browser only) ---------- */
@@ -245,27 +246,27 @@ tr.zero td { background: rgba(242,169,59,.07); }
 
   function analyze() {
     const px = M.price;
-    const p5 = M.m5.map((r) => r[1]);
-    const c4 = M.h4.map((r) => r[4]);
-    const e20_4 = ema(c4, 20), e50_4 = ema(c4, 50), e20_5 = ema(p5, 20), e50_5 = ema(p5, 50);
+    const c5 = M.c[300], cH = M.c[M.htf];
+    const p5 = c5.map((r) => r[4]), pH = cH.map((r) => r[4]);
+    const day = c5.slice(-288), week = cH.slice(-Math.round(7 * 86400 / M.htf));
     const A = {
-      px, e20_4: e20_4.at(-1), e50_4: e50_4.at(-1), e20_5: e20_5.at(-1), e50_5: e50_5.at(-1),
-      r4: rsi(c4), r5: rsi(p5), atr: atr(M.h4),
-      hi24: Math.max(...p5, px), lo24: Math.min(...p5, px),
-      hi7: Math.max(...M.h4.slice(-42).map((r) => r[2]), px), lo7: Math.min(...M.h4.slice(-42).map((r) => r[3]), px),
-      ema5: [e20_5, e50_5], ema4: [e20_4, e50_4],
+      px, e20_H: ema(pH, 20).at(-1), e50_H: ema(pH, 50).at(-1), e20_5: ema(p5, 20).at(-1), e50_5: ema(p5, 50).at(-1),
+      rH: rsi(pH), r5: rsi(p5), atr: atr(cH) * M.scale,
+      hi24: M.hi24 || Math.max(...day.map((r) => r[2]), px), lo24: M.lo24 || Math.min(...day.map((r) => r[3]), px),
+      hi7: Math.max(...week.map((r) => r[2]), px), lo7: Math.min(...week.map((r) => r[3]), px),
     };
-    const rets = []; for (let i = 1; i < p5.length; i++) rets.push(Math.log(p5[i] / p5[i - 1]));
+    const rets = []; for (let i = Math.max(1, p5.length - 288); i < p5.length; i++) rets.push(Math.log(p5[i] / p5[i - 1]));
     const mu = rets.reduce((s, x) => s + x, 0) / rets.length;
     A.sd24 = Math.sqrt(rets.reduce((s, x) => s + (x - mu) ** 2, 0) / rets.length) * Math.sqrt(288);
+    const h = M.htfName;
     A.votes = [
-      ["Price vs 4h EMA 20", px > A.e20_4],
-      ["4h EMA 20 vs EMA 50", A.e20_4 > A.e50_4],
+      [`Price vs ${h} EMA 20`, px > A.e20_H],
+      [`${h} EMA 20 vs EMA 50`, A.e20_H > A.e50_H],
       ["Price vs 5m EMA 20", px > A.e20_5],
       ["5m EMA 20 vs EMA 50", A.e20_5 > A.e50_5],
     ];
     let s = A.votes.reduce((t, [, up]) => t + (up ? 1 : -1), 0);
-    if (A.r4 > 70) s -= 1; else if (A.r4 < 30) s += 1;
+    if (A.rH > 70) s -= 1; else if (A.rH < 30) s += 1;
     A.score = s;
     A.bias = s >= 2 ? "long" : s <= -2 ? "short" : "wait";
     return A;
@@ -286,20 +287,25 @@ tr.zero td { background: rgba(242,169,59,.07); }
   function render() {
     if (!M) return;
     const A = analyze(), C = cfg();
-    $("px").textContent = usd(A.px);
-    $("chg").innerHTML = `<span class="${cls(M.change)}">${pct(M.change)}</span>`;
+    const pxEl = $("px");
+    pxEl.textContent = usd(A.px, 2);
+    if (lastShown !== null && A.px !== lastShown) {
+      pxEl.style.color = A.px > lastShown ? "var(--up)" : "var(--down)";
+      clearTimeout(pxEl._t); pxEl._t = setTimeout(() => { pxEl.style.color = ""; }, 600);
+    }
+    lastShown = A.px;
+    $("chg").innerHTML = M.change == null ? "—" : `<span class="${cls(M.change)}">${pct(M.change)}</span>`;
     $("r24").textContent = `${usd(A.lo24)} – ${usd(A.hi24)}`;
     $("r7").textContent = `${usd(A.lo7)} – ${usd(A.hi7)}`;
     $("atrv").textContent = `±${usd(A.atr)} (${(A.atr / A.px * 100).toFixed(2)}%)`;
     document.title = `${usd(A.px)} · BTC Paper Desk`;
 
-    // signal
     const call = { long: ["LONG", "up"], short: ["SHORT", "down"], wait: ["WAIT", "muted"] }[A.bias];
     $("call").textContent = call[0]; $("call").className = "call " + call[1];
     $("score").textContent = `score ${A.score > 0 ? "+" : ""}${A.score} of ±5`;
     const rsiChip = (v) => v > 70 ? '<span class="chip bear">overbought</span>' : v < 30 ? '<span class="chip bull">oversold</span>' : '<span class="chip neu">neutral</span>';
     $("sigs").innerHTML = A.votes.map(([n, up]) => `<div class="sig"><span>${n}</span><span class="chip ${up ? "bull" : "bear"}">${up ? "bullish" : "bearish"}</span></div>`).join("")
-      + `<div class="sig"><span>RSI 4h <span class="num">${A.r4.toFixed(0)}</span></span>${rsiChip(A.r4)}</div>`
+      + `<div class="sig"><span>RSI ${M.htfName} <span class="num">${A.rH.toFixed(0)}</span></span>${rsiChip(A.rH)}</div>`
       + `<div class="sig"><span>RSI 5m <span class="num">${A.r5.toFixed(0)}</span></span>${rsiChip(A.r5)}</div>`;
     $("callnote").textContent = A.bias === "wait"
       ? `Trend signals disagree. A long setup firms up above ${usd(A.hi24)} (24h high); a short setup below ${usd(A.lo24)} (24h low).`
@@ -393,7 +399,7 @@ tr.zero td { background: rgba(242,169,59,.07); }
       <div class="bias"><span class="chip ${p.side === "long" ? "bull" : "bear"}">${p.side} ${p.lev}×</span><span class="note">open ${mins} min</span></div>
       <div class="pnl ${cls(v)}">${sgn(v)} <span style="font-size:18px">${(v / p.margin * 100).toFixed(1)}%</span></div>
       <dl class="kv">
-        <dt>Entry</dt><dd>${usd(p.entry)}</dd><dt>Now</dt><dd>${usd(A.px)}</dd>
+        <dt>Entry</dt><dd>${usd(p.entry, 2)}</dd><dt>Now</dt><dd>${usd(A.px, 2)}</dd>
         <dt>Stop</dt><dd class="down">${usd(p.stop)}</dd><dt>Target ${p.tpr}R</dt><dd class="up">${usd(p.tp)}</dd>
         <dt>Liquidation</dt><dd class="down">${usd(p.liq)} · ${toLiq.toFixed(2)}% away</dd>
         <dt>Auto close</dt><dd>${p.auto ? "on" : "off"}</dd>
@@ -420,106 +426,151 @@ tr.zero td { background: rgba(242,169,59,.07); }
   ["margin", "lev", "stopk", "tpr", "fee", "mmr"].forEach((id) => $(id).addEventListener("input", render));
 
   /* ---------- chart ---------- */
-  $("tab24").onclick = () => { chartMode = "24h"; render(); };
-  $("tab14").onclick = () => { chartMode = "14d"; render(); };
+  function buildTabs() {
+    if (!M.tfs.includes(chartTf)) chartTf = M.tfs[0];
+    $("tabs").innerHTML = M.tfs.map((tf) => `<button data-tf="${tf}" aria-pressed="${tf === chartTf}">${TF[tf]}</button>`).join("");
+    $("tabs").querySelectorAll("button").forEach((b) => { b.onclick = () => { chartTf = +b.dataset.tf; buildTabs(); render(); }; });
+  }
+  const clock = (t, withDate) => { const d = new Date(t); return withDate ? d.toLocaleDateString([], { month: "short", day: "numeric" }) : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); };
   function drawChart(A) {
-    $("tab24").setAttribute("aria-pressed", chartMode === "24h"); $("tab14").setAttribute("aria-pressed", chartMode === "14d");
-    $("charttitle").textContent = chartMode === "24h" ? "Last 24 hours · 5-minute" : "Last 14 days · 4-hour candles";
+    const tf = chartTf, asLine = M.line.includes(tf), live = source === "live";
+    $("charttitle").textContent = `${TF[tf]} ${asLine ? "prices" : "candles"} · ${live ? "live" : "snapshot"}`;
+    const all = M.c[tf], start = Math.max(0, all.length - SHOW[tf]), rows = all.slice(start);
+    const closes = all.map((r) => r[4]), e20 = ema(closes, 20).slice(start), e50 = ema(closes, 50).slice(start);
     const svg = $("chart"), W = Math.max(280, svg.clientWidth || 600), H = 300, L = 8, R = 70, T = 12, B = 22;
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-    const daily = chartMode === "24h";
-    const pts = daily ? M.m5 : M.h4;
-    const ts = pts.map((r) => r[0]);
-    let lo = daily ? Math.min(...pts.map((r) => r[1])) : Math.min(...pts.map((r) => r[3]));
-    let hi = daily ? Math.max(...pts.map((r) => r[1])) : Math.max(...pts.map((r) => r[2]));
+    let lo = Math.min(...rows.map((r) => r[3])), hi = Math.max(...rows.map((r) => r[2]));
     const p = S.open, levels = [];
     if (p) {
       levels.push([p.entry, "var(--accent)", "Entry"], [p.tp, "var(--up)", "Target"], [p.stop, "var(--down)", "Stop"]);
       lo = Math.min(lo, p.entry, p.stop, p.tp); hi = Math.max(hi, p.entry, p.stop, p.tp);
     }
-    const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
-    const x = (t) => L + (t - ts[0]) / (ts.at(-1) - ts[0]) * (W - L - R);
+    const pad = (hi - lo) * 0.06 || 50; lo -= pad; hi += pad;
+    const n = rows.length, slot = (W - L - R) / Math.max(1, n);
+    const x = (i) => L + slot * (i + 0.5);
     const y = (v) => T + (hi - v) / (hi - lo) * (H - T - B);
     let g = "";
-    const step = [50, 100, 250, 500, 1000, 2000, 2500, 5000].find((s) => (hi - lo) / s <= 6) || 10000;
-    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${W - R + 6}" y="${y(v) + 3}">${(v / 1000).toFixed(step < 1000 ? 2 : 1)}k</text>`;
-    const nx = 5;
-    for (let i = 0; i <= nx; i++) {
-      const t = ts[0] + (ts.at(-1) - ts[0]) * i / nx, d = new Date(t);
-      const lab = daily ? d.toISOString().slice(11, 16) : d.toISOString().slice(5, 10);
-      g += `<text x="${x(t)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === nx ? "end" : "middle"}">${lab}</text>`;
+    const step = [10, 25, 50, 100, 250, 500, 1000, 2000, 2500, 5000].find((s) => (hi - lo) / s <= 6) || 10000;
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${W - R + 6}" y="${y(v) + 3}">${(v / 1000).toFixed(step < 100 ? 3 : step < 1000 ? 2 : 1)}k</text>`;
+    const ticks = 5, multiDay = rows[n - 1][0] - rows[0][0] > 36 * 3600 * 1000;
+    for (let k = 0; k <= ticks; k++) {
+      const i = Math.round((n - 1) * k / ticks);
+      g += `<text x="${x(i)}" y="${H - 6}" text-anchor="${k === 0 ? "start" : k === ticks ? "end" : "middle"}">${clock(rows[i][0], multiDay)}</text>`;
     }
-    const line = (vals, col, w) => `<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" points="${vals.map((v, i) => `${x(ts[i]).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}"/>`;
-    if (daily) {
-      const vals = pts.map((r) => r[1]);
-      g += `<polygon fill="var(--fg)" fill-opacity="0.05" points="${x(ts[0])},${H - B} ${vals.map((v, i) => `${x(ts[i]).toFixed(1)},${y(v).toFixed(1)}`).join(" ")} ${x(ts.at(-1))},${H - B}"/>`;
-      g += line(A.ema5[1], "var(--ema50)", 1.2) + line(A.ema5[0], "var(--ema20)", 1.2) + line(vals, "var(--fg)", 1.6);
+    const line = (vals, col, w) => `<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" points="${vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}"/>`;
+    g += line(e50, "var(--ema50)", 1.2) + line(e20, "var(--ema20)", 1.2);
+    if (asLine) {
+      const vals = rows.map((r) => r[4]);
+      g += `<polygon fill="var(--fg)" fill-opacity="0.05" points="${x(0)},${H - B} ${vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")} ${x(n - 1)},${H - B}"/>` + line(vals, "var(--fg)", 1.6);
     } else {
-      const cw = Math.max(1.5, (W - L - R) / pts.length * 0.6);
-      g += pts.map(([t, o, h, l, c]) => { const col = c >= o ? "var(--up)" : "var(--down)"; return `<line x1="${x(t)}" x2="${x(t)}" y1="${y(h)}" y2="${y(l)}" stroke="${col}"/><rect x="${x(t) - cw / 2}" y="${y(Math.max(o, c))}" width="${cw}" height="${Math.max(1, Math.abs(y(o) - y(c)))}" fill="${col}"/>`; }).join("");
-      g += line(A.ema4[1], "var(--ema50)", 1.2) + line(A.ema4[0], "var(--ema20)", 1.2);
+      const cw = Math.max(1.5, slot * 0.65);
+      g += rows.map(([, o, h, l, c], i) => { const col = c >= o ? "var(--up)" : "var(--down)"; return `<line x1="${x(i)}" x2="${x(i)}" y1="${y(h)}" y2="${y(l)}" stroke="${col}"/><rect x="${x(i) - cw / 2}" y="${y(Math.max(o, c))}" width="${cw}" height="${Math.max(1, Math.abs(y(o) - y(c)))}" fill="${col}"/>`; }).join("");
     }
     levels.forEach(([v, col, name]) => { g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${col}" stroke-dasharray="5 4"/><text x="${W - R - 4}" y="${y(v) - 4}" text-anchor="end" style="fill:${col}">${name} ${usd(v)}</text>`; });
     if (p) {
       const below = p.side === "long";
       g += `<text x="${L + 4}" y="${below ? H - B - 6 : T + 10}" style="fill:var(--down)">Liquidation ${usd(p.liq)} ${below ? "↓" : "↑"} off chart</text>`;
     }
-    const lx = x(ts.at(-1)), ly = y(A.px);
-    g += `<circle cx="${lx}" cy="${ly}" r="4" fill="var(--accent)"/><rect x="${W - R + 2}" y="${ly - 9}" width="${R - 4}" height="18" rx="3" fill="var(--accent)"/><text x="${W - R + 6}" y="${ly + 4}" style="fill:var(--bg);font-weight:500">${(A.px / 1000).toFixed(2)}k</text>`;
+    const ly = y(A.px);
+    g += `<line x1="${L}" x2="${W - R}" y1="${ly}" y2="${ly}" stroke="var(--accent)" stroke-opacity="0.5" stroke-dasharray="2 3"/>`;
+    g += `<rect x="${W - R + 2}" y="${ly - 9}" width="${R - 4}" height="18" rx="3" fill="var(--accent)"/><text x="${W - R + 6}" y="${ly + 4}" style="fill:var(--bg);font-weight:500">${(A.px / 1000).toFixed(2)}k</text>`;
     svg.innerHTML = g;
   }
   window.addEventListener("resize", () => { if (M) drawChart(analyze()); });
 
   /* ---------- data ---------- */
-  const setSource = (kind, text) => { source = kind; const pill = $("srcpill"); pill.className = "pill " + (kind === "live" ? "live up" : kind === "snapshot" ? "" : "down"); pill.style.color = kind === "snapshot" ? "var(--accent)" : ""; $("srctext").textContent = text; };
+  let source = null;
+  const setSource = (kind, text) => {
+    source = kind; const pill = $("srcpill");
+    pill.className = "pill " + (kind === "live" ? "live up" : kind === "error" ? "down" : "");
+    pill.style.color = kind === "snapshot" ? "var(--accent)" : "";
+    $("srctext").textContent = text;
+  };
   const showUpdated = () => {
     if (!M) return;
+    if (source === "live") { $("updated").textContent = `Last trade ${new Date(M.updated).toLocaleTimeString([], { hour12: false })}`; return; }
     const age = Math.max(0, Math.round((Date.now() - M.updated) / 60000));
-    $("updated").textContent = `Price at ${new Date(M.updated).toISOString().slice(11, 16)} UTC · ${age < 1 ? "just now" : age + " min ago"}`;
+    $("updated").textContent = `Price at ${clock(M.updated)} · ${age < 1 ? "just now" : age + " min ago"}`;
   };
-  setInterval(showUpdated, 15000);
+  setInterval(showUpdated, 1000);
 
-  async function getJSON(path) { const r = await fetch(API + path); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
-  async function loadSeries() {
-    const [mc, ohlc] = await Promise.all([getJSON("/coins/bitcoin/market_chart?vs_currency=usd&days=1"), getJSON("/coins/bitcoin/ohlc?vs_currency=usd&days=14")]);
-    return { m5: mc.prices, h4: ohlc };
+  let pending = false;
+  const scheduleRender = () => { if (pending) return; pending = true; setTimeout(() => { pending = false; render(); showUpdated(); }, 350); };
+  function tick(p, t) {
+    if (!M || !(p > 0)) return;
+    M.price = p; M.updated = t;
+    for (const tf of M.tfs) {
+      const arr = M.c[tf], b = Math.floor(t / (tf * 1000)) * tf * 1000, last = arr.at(-1);
+      if (!last || b > last[0]) arr.push([b, p, p, p, p]);
+      else if (b === last[0]) { last[2] = Math.max(last[2], p); last[3] = Math.min(last[3], p); last[4] = p; }
+    }
+    scheduleRender();
   }
-  async function loadSpot() {
-    const s = (await getJSON("/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true&include_last_updated_at=true")).bitcoin;
-    return { price: s.usd, change: s.usd_24h_change, updated: s.last_updated_at * 1000 };
-  }
-  async function startLive() {
-    const [series, spot] = await Promise.all([loadSeries(), loadSpot()]);
-    M = { ...spot, ...series };
-    setSource("live", "Live · every 20s"); render(); showUpdated();
+
+  async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
+  const cbCandles = async (g) => (await getJSON(`${CB}/products/BTC-USD/candles?granularity=${g}`)).map(([t, l, h, o, c]) => [t * 1000, o, h, l, c]).reverse();
+
+  // 1st choice: Coinbase candles + websocket trade feed (tick by tick)
+  async function startCoinbase() {
+    const tfs = [60, 300, 900, 3600];
+    const sets = await Promise.all(tfs.map(cbCandles));
+    const c = {}; tfs.forEach((g, i) => { c[g] = sets[i]; });
+    M = { price: c[60].at(-1)[4], change: null, updated: c[60].at(-1)[0], c, tfs, htf: 3600, htfName: "1h", scale: 2, line: [] };
+    try { const s = await getJSON(`${CB}/products/BTC-USD/stats`); M.change = (M.price / +s.open - 1) * 100; M.hi24 = +s.high; M.lo24 = +s.low; } catch (e) {}
+    setSource("snapshot", "Connecting to trades");
+    buildTabs(); render(); showUpdated();
+    connectWS();
     setInterval(async () => {
-      try { const s = await loadSpot(); Object.assign(M, s); if (M.m5.at(-1)[0] < s.updated) M.m5.push([s.updated, s.price]); setSource("live", "Live · every 20s"); render(); showUpdated(); }
-      catch (e) { setSource("error", "Rate limited, retrying"); }
-    }, 20000);
-    setInterval(async () => { try { Object.assign(M, await loadSeries()); render(); } catch (e) {} }, 300000);
+      try { const sets2 = await Promise.all(tfs.map(cbCandles)); tfs.forEach((g, i) => { M.c[g] = sets2[i]; }); tick(M.price, M.updated); } catch (e) {}
+    }, 300000);
+  }
+  function connectWS() {
+    let ws;
+    try { ws = new WebSocket("wss://ws-feed.exchange.coinbase.com"); } catch (e) { setSource("error", "Live feed blocked"); return; }
+    ws.onopen = () => ws.send(JSON.stringify({ type: "subscribe", product_ids: ["BTC-USD"], channels: ["ticker"] }));
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.type !== "ticker") return;
+      if (source !== "live") setSource("live", "Live · every trade");
+      if (+m.open_24h) M.change = (+m.price / +m.open_24h - 1) * 100;
+      if (+m.high_24h) { M.hi24 = +m.high_24h; M.lo24 = +m.low_24h; }
+      tick(+m.price, m.time ? Date.parse(m.time) : Date.now());
+    };
+    ws.onclose = () => { setSource("error", "Reconnecting"); setTimeout(connectWS, 3000); };
+  }
+
+  // CoinGecko and the Claude snapshot share one shape: 5m prices + 4h candles
+  const geckoM = (spot, m5, h4) => ({
+    price: spot.price, change: spot.change, updated: spot.updated,
+    c: { 300: m5.map(([t, p]) => [t, p, p, p, p]), 14400: h4.map((r) => r.slice(0, 5)) },
+    tfs: [300, 14400], htf: 14400, htfName: "4h", scale: 1, line: [300],
+  });
+  async function startGecko() {
+    const spotNow = async () => { const s = (await getJSON(`${CG}/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true&include_last_updated_at=true`)).bitcoin; return { price: s.usd, change: s.usd_24h_change, updated: s.last_updated_at * 1000 }; };
+    const [spot, mc, ohlc] = await Promise.all([spotNow(), getJSON(`${CG}/coins/bitcoin/market_chart?vs_currency=usd&days=1`), getJSON(`${CG}/coins/bitcoin/ohlc?vs_currency=usd&days=14`)]);
+    M = geckoM(spot, mc.prices, ohlc);
+    chartTf = 300; setSource("live", "Live · every 20s"); buildTabs(); render(); showUpdated();
+    setInterval(async () => { try { const s = await spotNow(); M.change = s.change; tick(s.price, s.updated); setSource("live", "Live · every 20s"); } catch (e) { setSource("error", "Rate limited, retrying"); } }, 20000);
   }
   async function startSnapshot() {
-    const use = window.claude && window.claude.use;
-    const db = use ? await window.claude.use("db") : null;
-    if (!db) { setSource("error", "No data"); $("updated").textContent = "Open this page as a file in your browser for live prices."; return; }
+    const db = window.claude && window.claude.use ? await window.claude.use("db") : null;
+    if (!db) { setSource("error", "No data"); $("updated").textContent = "Open btc-paper-desk.html in your browser for live prices."; return; }
     setSource("snapshot", "Snapshot · pushed by Claude");
+    $("updated").textContent = "Loading snapshot";
     const timer = setTimeout(() => { if (!M) $("updated").textContent = "Can't reach the data store yet."; }, 10000);
     db.doc("market/btc").onSnapshot((snap) => {
       clearTimeout(timer);
       if (!snap.exists) { $("updated").textContent = "No snapshot yet. Ask Claude to refresh."; return; }
       const d = snap.data();
-      M = {
-        price: d.price, change: d.change, updated: d.updated,
-        m5: d.m5.t.map((t, i) => [t, d.m5.p[i]]),
-        h4: d.h4.t.map((t, i) => [t, d.h4.o[i], d.h4.h[i], d.h4.l[i], d.h4.c[i]]),
-      };
-      render(); showUpdated();
+      M = geckoM(d, d.m5.t.map((t, i) => [t, d.m5.p[i]]), d.h4.t.map((t, i) => [t, d.h4.o[i], d.h4.h[i], d.h4.l[i], d.h4.c[i]]));
+      chartTf = 300; buildTabs(); render(); showUpdated();
     }, () => { clearTimeout(timer); setSource("error", "Data store unavailable"); });
   }
 
   (async () => {
-    try { await startLive(); }
-    catch (e) { startSnapshot(); }
+    try { await startCoinbase(); return; } catch (e) {}
+    try { await startGecko(); return; } catch (e) {}
+    startSnapshot();
   })();
 })();
 </script>
