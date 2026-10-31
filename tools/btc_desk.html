@@ -1,0 +1,523 @@
+<title>BTC Paper Desk</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: trading-desk console. Price band on top, chart + outcomes left, signal + paper ticket right, long/short plans below. Deliberately dark-only. */
+:root {
+  --bg: #0d1117;
+  --panel: #141b24;
+  --line: #243041;
+  --fg: #e6ebf2;
+  --muted: #8b98aa;
+  --accent: #f2a93b;
+  --up: #2fbf86;
+  --down: #ef5b5b;
+  --warn: #f2a93b;
+  --grid: #1c2633;
+  --ema20: #6fa8ff;
+  --ema50: #c58cff;
+  --f-display: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 14px; line-height: 1.45;
+  padding-block: 16px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 16px; }
+.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); }
+h2 { font-family: var(--f-display); font-weight: 600; font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+
+/* price band */
+.band { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 28px; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+.ticker { display: grid; gap: 2px; }
+.ticker .pair { font-family: var(--f-display); font-weight: 600; letter-spacing: .12em; color: var(--accent); font-size: 14px; }
+.ticker .px { font-family: var(--f-display); font-weight: 700; font-size: clamp(40px, 8vw, 64px); line-height: 1; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.stat { display: grid; gap: 1px; }
+.stat .k { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font-family: var(--f-mono); font-size: 14px; }
+.source { margin-left: auto; display: grid; gap: 4px; justify-items: end; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; border: 1px solid currentColor; }
+.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.live .dot { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .pill.live .dot { animation: none; } }
+
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+@media (max-width: 920px) { .main { grid-template-columns: minmax(0, 1fr); } }
+.col { display: grid; gap: 16px; min-width: 0; }
+
+/* chart */
+.chart-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; margin-left: auto; }
+.tabs button { background: transparent; color: var(--muted); border: 0; padding: 5px 12px; font: 600 12px var(--f-body); cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--line); color: var(--fg); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; }
+#chart { width: 100%; height: 300px; display: block; }
+#chart text { font-family: var(--f-mono); font-size: 10.5px; fill: var(--muted); }
+
+/* tables */
+.tscroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: right; font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--grid); font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+tr.zero td { background: rgba(242,169,59,.07); }
+.liq { font-size: 10px; font-weight: 600; letter-spacing: .06em; padding: 1px 5px; border-radius: 3px; background: var(--down); color: var(--bg); margin-left: 6px; }
+
+/* signal */
+.bias { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.bias .call { font-family: var(--f-display); font-weight: 700; font-size: 30px; letter-spacing: .04em; }
+.score { font-family: var(--f-mono); color: var(--muted); }
+.sigs { display: grid; gap: 6px; }
+.sig { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
+.chip { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: 1px 7px; border-radius: 3px; }
+.chip.bull { background: rgba(47,191,134,.15); color: var(--up); }
+.chip.bear { background: rgba(239,91,91,.15); color: var(--down); }
+.chip.neu { background: var(--line); color: var(--muted); }
+.note { font-size: 12px; color: var(--muted); }
+
+/* ticket */
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field { display: grid; gap: 4px; }
+.field label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.field input, .field select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; font: 14px var(--f-mono); }
+.field input:focus-visible, .field select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.btn { border: 0; border-radius: 4px; padding: 11px 10px; font: 700 15px var(--f-display); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; color: var(--bg); }
+.btn.long { background: var(--up); } .btn.short { background: var(--down); }
+.btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+.btn:disabled { opacity: .35; cursor: not-allowed; }
+.pos { border: 1px solid var(--line); border-radius: 5px; padding: 12px; display: grid; gap: 8px; }
+.pos .pnl { font-family: var(--f-display); font-weight: 700; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; font-family: var(--f-mono); }
+.meter { height: 6px; border-radius: 3px; background: var(--grid); position: relative; overflow: hidden; }
+.meter span { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+
+/* plans */
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.plan h3 { margin: 0; font-family: var(--f-display); font-size: 22px; letter-spacing: .06em; text-transform: uppercase; display: flex; align-items: center; gap: 10px; }
+.plan.long h3 { color: var(--up); } .plan.short h3 { color: var(--down); }
+.flag { font-size: 11px; font-family: var(--f-body); font-weight: 600; letter-spacing: .06em; color: var(--accent); border: 1px solid var(--accent); padding: 1px 6px; border-radius: 3px; }
+.warnbox { border-left: 3px solid var(--down); background: rgba(239,91,91,.08); padding: 8px 10px; font-size: 13px; }
+.foot { font-size: 12px; color: var(--muted); max-width: 80ch; }
+.empty { padding: 40px 0; text-align: center; color: var(--muted); }
+</style>
+
+<div class="wrap">
+  <section class="band" aria-label="Price">
+    <div class="ticker">
+      <span class="pair">BTC / USD · PAPER</span>
+      <span class="px num" id="px">—</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="k">24h change</span><span class="v" id="chg">—</span></div>
+      <div class="stat"><span class="k">24h range</span><span class="v" id="r24">—</span></div>
+      <div class="stat"><span class="k">7d range</span><span class="v" id="r7">—</span></div>
+      <div class="stat"><span class="k">Typical 4h move</span><span class="v" id="atrv">—</span></div>
+    </div>
+    <div class="source">
+      <span class="pill" id="srcpill"><span class="dot"></span><span id="srctext">Connecting</span></span>
+      <span class="note" id="updated">Waiting for data</span>
+    </div>
+  </section>
+
+  <div class="main">
+    <div class="col">
+      <section class="panel">
+        <div class="chart-head">
+          <h2 id="charttitle">Last 24 hours · 5-minute</h2>
+          <div class="tabs" role="group" aria-label="Chart range">
+            <button id="tab24" aria-pressed="true">24h</button>
+            <button id="tab14" aria-pressed="false">14d</button>
+          </div>
+        </div>
+        <svg id="chart" role="img" aria-label="BTC price chart"></svg>
+        <div class="legend">
+          <span><i style="background:var(--fg)"></i>Price</span>
+          <span><i style="background:var(--ema20)"></i>EMA 20</span>
+          <span><i style="background:var(--ema50)"></i>EMA 50</span>
+          <span><i style="background:var(--accent)"></i>Your entry</span>
+          <span><i style="background:var(--up)"></i>Target</span>
+          <span><i style="background:var(--down)"></i>Stop / liquidation</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Every outcome · from current price</h2>
+        <p class="note" id="outnote">P&amp;L on your margin, fees included.</p>
+        <div class="tscroll">
+          <table>
+            <thead><tr><th>BTC move</th><th>Price</th><th>Long P&amp;L</th><th>Long ROE</th><th>Short P&amp;L</th><th>Short ROE</th></tr></thead>
+            <tbody id="outcomes"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel" aria-live="polite">
+        <h2>Signal</h2>
+        <div class="bias"><span class="call" id="call">—</span><span class="score" id="score"></span></div>
+        <div class="sigs" id="sigs"></div>
+        <p class="note" id="callnote"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Paper ticket</h2>
+        <div class="fields">
+          <div class="field"><label for="margin">Margin ($)</label><input id="margin" type="number" min="1" step="1" value="100"></div>
+          <div class="field"><label for="lev">Leverage</label><input id="lev" type="number" min="1" max="125" step="1" value="10"></div>
+          <div class="field"><label for="stopk">Stop (× 4h ATR)</label><input id="stopk" type="number" min="0.25" max="5" step="0.25" value="1"></div>
+          <div class="field"><label for="tpr">Take profit at</label>
+            <select id="tpr"><option value="1">1R</option><option value="2" selected>2R</option><option value="3">3R</option></select></div>
+          <div class="field"><label for="fee">Fee per side (%)</label><input id="fee" type="number" min="0" step="0.01" value="0.05"></div>
+          <div class="field"><label for="mmr">Maint. margin (%)</label><input id="mmr" type="number" min="0" step="0.1" value="0.5"></div>
+        </div>
+        <label class="check"><input id="auto" type="checkbox" checked> Close automatically at stop or target</label>
+        <div class="btns">
+          <button class="btn long" id="openlong">Buy / Long</button>
+          <button class="btn short" id="openshort">Sell / Short</button>
+        </div>
+        <div id="posbox"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Paper log</h2>
+        <div class="kv" id="logsum"></div>
+        <div class="tscroll"><table><thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>Why</th><th>P&amp;L</th></tr></thead><tbody id="log"></tbody></table></div>
+        <button class="btn ghost" id="reset">Reset paper account</button>
+      </section>
+    </div>
+  </div>
+
+  <div class="plans" id="plans"></div>
+
+  <p class="foot">Paper trading only: no orders are sent anywhere. Prices from CoinGecko's public API (spot index, about a minute behind exchanges). Liquidation uses the isolated-margin estimate entry × (1 ∓ 1/leverage ± maintenance margin); real exchanges also charge funding every 8 hours and liquidate on their own mark price. The hit-rate figures assume a coin-flip market with no edge. Not financial advice.</p>
+</div>
+
+<script>
+(() => {
+  const API = "https://api.coingecko.com/api/v3";
+  const $ = (id) => document.getElementById(id);
+  const usd = (x, d = 0) => "$" + Number(x).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const sgn = (x) => (x < 0 ? "−$" : "+$") + Math.abs(x).toFixed(2);
+  const pct = (x, d = 2) => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(d) + "%";
+  const cls = (x) => (x > 0 ? "up" : x < 0 ? "down" : "muted");
+
+  let M = null;          // { price, change, updated, m5: [[t,p]], h4: [[t,o,h,l,c]] }
+  let source = null;     // "live" | "snapshot"
+  let chartMode = "24h";
+  const KEY = "btcpaper.v1";
+
+  /* ---------- paper state (this browser only) ---------- */
+  let S = { open: null, closed: [] };
+  try { const raw = localStorage.getItem(KEY); if (raw) S = JSON.parse(raw); } catch (e) {}
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+
+  /* ---------- indicators ---------- */
+  const ema = (xs, n) => { const k = 2 / (n + 1); const out = [xs[0]]; for (let i = 1; i < xs.length; i++) out.push(xs[i] * k + out[i - 1] * (1 - k)); return out; };
+  const rsi = (xs, n = 14) => {
+    if (xs.length <= n) return 50;
+    let g = 0, l = 0;
+    for (let i = 1; i <= n; i++) { const d = xs[i] - xs[i - 1]; g += Math.max(d, 0); l += Math.max(-d, 0); }
+    let ag = g / n, al = l / n;
+    for (let i = n + 1; i < xs.length; i++) { const d = xs[i] - xs[i - 1]; ag = (ag * (n - 1) + Math.max(d, 0)) / n; al = (al * (n - 1) + Math.max(-d, 0)) / n; }
+    return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+  };
+  const atr = (c, n = 14) => {
+    const tr = []; for (let i = 1; i < c.length; i++) { const [, , h, l] = c[i], pc = c[i - 1][4]; tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc))); }
+    let a = tr.slice(0, n).reduce((s, x) => s + x, 0) / n; for (let i = n; i < tr.length; i++) a = (a * (n - 1) + tr[i]) / n; return a;
+  };
+
+  function analyze() {
+    const px = M.price;
+    const p5 = M.m5.map((r) => r[1]);
+    const c4 = M.h4.map((r) => r[4]);
+    const e20_4 = ema(c4, 20), e50_4 = ema(c4, 50), e20_5 = ema(p5, 20), e50_5 = ema(p5, 50);
+    const A = {
+      px, e20_4: e20_4.at(-1), e50_4: e50_4.at(-1), e20_5: e20_5.at(-1), e50_5: e50_5.at(-1),
+      r4: rsi(c4), r5: rsi(p5), atr: atr(M.h4),
+      hi24: Math.max(...p5, px), lo24: Math.min(...p5, px),
+      hi7: Math.max(...M.h4.slice(-42).map((r) => r[2]), px), lo7: Math.min(...M.h4.slice(-42).map((r) => r[3]), px),
+      ema5: [e20_5, e50_5], ema4: [e20_4, e50_4],
+    };
+    const rets = []; for (let i = 1; i < p5.length; i++) rets.push(Math.log(p5[i] / p5[i - 1]));
+    const mu = rets.reduce((s, x) => s + x, 0) / rets.length;
+    A.sd24 = Math.sqrt(rets.reduce((s, x) => s + (x - mu) ** 2, 0) / rets.length) * Math.sqrt(288);
+    A.votes = [
+      ["Price vs 4h EMA 20", px > A.e20_4],
+      ["4h EMA 20 vs EMA 50", A.e20_4 > A.e50_4],
+      ["Price vs 5m EMA 20", px > A.e20_5],
+      ["5m EMA 20 vs EMA 50", A.e20_5 > A.e50_5],
+    ];
+    let s = A.votes.reduce((t, [, up]) => t + (up ? 1 : -1), 0);
+    if (A.r4 > 70) s -= 1; else if (A.r4 < 30) s += 1;
+    A.score = s;
+    A.bias = s >= 2 ? "long" : s <= -2 ? "short" : "wait";
+    return A;
+  }
+
+  /* ---------- position math ---------- */
+  const cfg = () => ({
+    margin: Math.max(1, +$("margin").value || 100), lev: Math.min(125, Math.max(1, +$("lev").value || 10)),
+    k: Math.max(0.25, +$("stopk").value || 1), tpr: +$("tpr").value || 2,
+    fee: Math.max(0, +$("fee").value || 0) / 100, mmr: Math.max(0, +$("mmr").value || 0) / 100,
+  });
+  const liqPx = (e, side, lev, mmr) => side === "long" ? e * (1 - 1 / lev + mmr) : e * (1 + 1 / lev - mmr);
+  const pnl = (e, x, side, notional, fee) => { const q = notional / e; return (x - e) * q * (side === "long" ? 1 : -1) - notional * fee - x * q * fee; };
+  const isLiq = (x, side, liq) => side === "long" ? x <= liq : x >= liq;
+  const valueAt = (pos, x) => isLiq(x, pos.side, pos.liq) ? -pos.margin : pnl(pos.entry, x, pos.side, pos.margin * pos.lev, pos.fee);
+
+  /* ---------- render ---------- */
+  function render() {
+    if (!M) return;
+    const A = analyze(), C = cfg();
+    $("px").textContent = usd(A.px);
+    $("chg").innerHTML = `<span class="${cls(M.change)}">${pct(M.change)}</span>`;
+    $("r24").textContent = `${usd(A.lo24)} – ${usd(A.hi24)}`;
+    $("r7").textContent = `${usd(A.lo7)} – ${usd(A.hi7)}`;
+    $("atrv").textContent = `±${usd(A.atr)} (${(A.atr / A.px * 100).toFixed(2)}%)`;
+    document.title = `${usd(A.px)} · BTC Paper Desk`;
+
+    // signal
+    const call = { long: ["LONG", "up"], short: ["SHORT", "down"], wait: ["WAIT", "muted"] }[A.bias];
+    $("call").textContent = call[0]; $("call").className = "call " + call[1];
+    $("score").textContent = `score ${A.score > 0 ? "+" : ""}${A.score} of ±5`;
+    const rsiChip = (v) => v > 70 ? '<span class="chip bear">overbought</span>' : v < 30 ? '<span class="chip bull">oversold</span>' : '<span class="chip neu">neutral</span>';
+    $("sigs").innerHTML = A.votes.map(([n, up]) => `<div class="sig"><span>${n}</span><span class="chip ${up ? "bull" : "bear"}">${up ? "bullish" : "bearish"}</span></div>`).join("")
+      + `<div class="sig"><span>RSI 4h <span class="num">${A.r4.toFixed(0)}</span></span>${rsiChip(A.r4)}</div>`
+      + `<div class="sig"><span>RSI 5m <span class="num">${A.r5.toFixed(0)}</span></span>${rsiChip(A.r5)}</div>`;
+    $("callnote").textContent = A.bias === "wait"
+      ? `Trend signals disagree. A long setup firms up above ${usd(A.hi24)} (24h high); a short setup below ${usd(A.lo24)} (24h low).`
+      : A.bias === "long" ? `Trend and momentum lean up. Invalidated below ${usd(A.px - C.k * A.atr)}.`
+      : `Trend and momentum lean down. Invalidated above ${usd(A.px + C.k * A.atr)}.`;
+
+    renderPlans(A, C);
+    renderOutcomes(A, C);
+    checkPosition(A.px);
+    renderPosition(A, C);
+    renderLog();
+    drawChart(A);
+  }
+
+  function renderPlans(A, C) {
+    const notional = C.margin * C.lev, stopD = C.k * A.atr;
+    const oneR = stopD / A.px;
+    $("plans").innerHTML = ["long", "short"].map((side) => {
+      const d = side === "long" ? 1 : -1, stop = A.px - d * stopD, liq = liqPx(A.px, side, C.lev, C.mmr);
+      const loss = pnl(A.px, stop, side, notional, C.fee);
+      const stopBeyondLiq = side === "long" ? stop <= liq : stop >= liq;
+      const rows = [1, 2, 3].map((r) => {
+        const t = A.px + d * stopD * r, g = pnl(A.px, t, side, notional, C.fee);
+        const be = Math.abs(loss) / (Math.abs(loss) + g) * 100;
+        return `<tr><td>${r}R target</td><td>${usd(t)}</td><td class="${cls(g)}">${sgn(g)}</td><td>${(g / C.margin * 100).toFixed(0)}%</td><td>${(100 / (1 + r)).toFixed(0)}%</td><td>${be.toFixed(0)}%</td></tr>`;
+      }).join("");
+      return `<section class="panel plan ${side}">
+        <h3>${side === "long" ? "Long · buy" : "Short · sell"}${A.bias === side ? '<span class="flag">Signal side</span>' : ""}</h3>
+        <dl class="kv">
+          <dt>Entry (now)</dt><dd>${usd(A.px)}</dd>
+          <dt>Size</dt><dd>${usd(notional)} · ${(notional / A.px).toFixed(5)} BTC</dd>
+          <dt>Stop</dt><dd>${usd(stop)} <span class="muted">(${(oneR * 100).toFixed(2)}%)</span> → <span class="down">${sgn(loss)}</span></dd>
+          <dt>Liquidation</dt><dd class="down">${usd(liq)} <span class="muted">(${(Math.abs(liq / A.px - 1) * 100).toFixed(2)}%)</span> → −$${C.margin.toFixed(2)}</dd>
+          <dt>Fees round trip</dt><dd>≈ $${(2 * notional * C.fee).toFixed(2)}</dd>
+        </dl>
+        ${stopBeyondLiq ? `<div class="warnbox">At ${C.lev}× the liquidation price comes before your stop. You would lose the whole $${C.margin} before the stop fires. Lower the leverage or tighten the stop.</div>` : ""}
+        <div class="tscroll"><table><thead><tr><th>Exit</th><th>Price</th><th>P&amp;L</th><th>ROE</th><th>Hit odds*</th><th>Win rate to break even</th></tr></thead><tbody>${rows}</tbody></table></div>
+      </section>`;
+    }).join("");
+  }
+
+  function renderOutcomes(A, C) {
+    const notional = C.margin * C.lev;
+    const moves = [-10, -8, -5, -3, -2, -1, -0.5, 0, 0.5, 1, 2, 3, 5, 8, 10];
+    $("outnote").textContent = `$${C.margin} margin × ${C.lev}× = ${usd(notional)} position. Each 1% BTC move ≈ $${(notional / 100).toFixed(2)}. 68% of days BTC stays within ±${(A.sd24 * 100).toFixed(1)}% (${usd(A.px * Math.exp(-A.sd24))} – ${usd(A.px * Math.exp(A.sd24))}) on recent volatility.`;
+    $("outcomes").innerHTML = moves.map((m) => {
+      const x = A.px * (1 + m / 100);
+      const cell = (side) => {
+        const liq = liqPx(A.px, side, C.lev, C.mmr), dead = isLiq(x, side, liq);
+        const v = dead ? -C.margin : pnl(A.px, x, side, notional, C.fee);
+        return `<td class="${cls(v)}">${sgn(v)}${dead ? '<span class="liq">LIQ</span>' : ""}</td><td class="${cls(v)}">${(v / C.margin * 100).toFixed(0)}%</td>`;
+      };
+      return `<tr class="${m === 0 ? "zero" : ""}"><td>${m === 0 ? "No move" : pct(m, m % 1 ? 1 : 0)}</td><td>${usd(x)}</td>${cell("long")}${cell("short")}</tr>`;
+    }).join("");
+  }
+
+  /* ---------- paper position ---------- */
+  function openPos(side) {
+    if (!M || S.open) return;
+    const A = analyze(), C = cfg(), d = side === "long" ? 1 : -1, stopD = C.k * A.atr;
+    S.open = {
+      side, entry: A.px, margin: C.margin, lev: C.lev, fee: C.fee, auto: $("auto").checked,
+      stop: A.px - d * stopD, tp: A.px + d * stopD * C.tpr, tpr: C.tpr,
+      liq: liqPx(A.px, side, C.lev, C.mmr), opened: Date.now(),
+    };
+    save(); render();
+  }
+  function closePos(x, why) {
+    const p = S.open; if (!p) return;
+    const v = why === "Liquidated" ? -p.margin : valueAt(p, x);
+    S.closed.unshift({ side: p.side, entry: p.entry, exit: x, why, pnl: +v.toFixed(2), lev: p.lev, margin: p.margin, opened: p.opened, closed: Date.now() });
+    S.open = null; save();
+  }
+  function checkPosition(x) {
+    const p = S.open; if (!p) return;
+    if (isLiq(x, p.side, p.liq)) return closePos(p.liq, "Liquidated");
+    if (!p.auto) return;
+    const hitStop = p.side === "long" ? x <= p.stop : x >= p.stop;
+    const hitTp = p.side === "long" ? x >= p.tp : x <= p.tp;
+    if (hitStop) closePos(p.stop, "Stop");
+    else if (hitTp) closePos(p.tp, `Target ${p.tpr}R`);
+  }
+  function renderPosition(A) {
+    const p = S.open;
+    $("openlong").disabled = $("openshort").disabled = !!p || !M;
+    if (!p) { $("posbox").innerHTML = `<p class="note">No open position. Buy / Long or Sell / Short opens one at ${usd(A.px)} with the settings above.</p>`; return; }
+    const v = valueAt(p, A.px), toLiq = Math.abs(p.liq / A.px - 1) * 100, full = Math.abs(p.liq / p.entry - 1) * 100;
+    const used = Math.min(100, Math.max(0, (1 - toLiq / full) * 100));
+    const mins = Math.round((Date.now() - p.opened) / 60000);
+    $("posbox").innerHTML = `<div class="pos">
+      <div class="bias"><span class="chip ${p.side === "long" ? "bull" : "bear"}">${p.side} ${p.lev}×</span><span class="note">open ${mins} min</span></div>
+      <div class="pnl ${cls(v)}">${sgn(v)} <span style="font-size:18px">${(v / p.margin * 100).toFixed(1)}%</span></div>
+      <dl class="kv">
+        <dt>Entry</dt><dd>${usd(p.entry)}</dd><dt>Now</dt><dd>${usd(A.px)}</dd>
+        <dt>Stop</dt><dd class="down">${usd(p.stop)}</dd><dt>Target ${p.tpr}R</dt><dd class="up">${usd(p.tp)}</dd>
+        <dt>Liquidation</dt><dd class="down">${usd(p.liq)} · ${toLiq.toFixed(2)}% away</dd>
+        <dt>Auto close</dt><dd>${p.auto ? "on" : "off"}</dd>
+      </dl>
+      <div class="note">Margin used toward liquidation</div>
+      <div class="meter"><span style="width:${used.toFixed(1)}%;background:${used > 66 ? "var(--down)" : "var(--accent)"}"></span></div>
+      <button class="btn ghost" id="closebtn">Close at ${usd(A.px)}</button>
+    </div>`;
+    $("closebtn").onclick = () => { closePos(M.price, "Manual"); render(); };
+  }
+  function renderLog() {
+    const n = S.closed.length, wins = S.closed.filter((t) => t.pnl > 0).length, tot = S.closed.reduce((s, t) => s + t.pnl, 0);
+    $("logsum").innerHTML = `<dt>Trades</dt><dd>${n}</dd><dt>Win rate</dt><dd>${n ? (wins / n * 100).toFixed(0) + "%" : "—"}</dd><dt>Total P&amp;L</dt><dd class="${cls(tot)}">${sgn(tot)}</dd>`;
+    $("log").innerHTML = n ? S.closed.slice(0, 20).map((t) => `<tr><td>${t.side} ${t.lev}×</td><td>${usd(t.entry)}</td><td>${usd(t.exit)}</td><td>${t.why}</td><td class="${cls(t.pnl)}">${sgn(t.pnl)}</td></tr>`).join("")
+      : `<tr><td colspan="5" class="muted" style="text-align:left;font-family:var(--f-body)">Closed paper trades show up here.</td></tr>`;
+  }
+  let resetArmed = false;
+  $("reset").onclick = () => {
+    if (!resetArmed) { resetArmed = true; $("reset").textContent = "Tap again to erase all paper trades"; setTimeout(() => { resetArmed = false; $("reset").textContent = "Reset paper account"; }, 4000); return; }
+    S = { open: null, closed: [] }; save(); resetArmed = false; $("reset").textContent = "Reset paper account"; render();
+  };
+  $("openlong").onclick = () => openPos("long");
+  $("openshort").onclick = () => openPos("short");
+  ["margin", "lev", "stopk", "tpr", "fee", "mmr"].forEach((id) => $(id).addEventListener("input", render));
+
+  /* ---------- chart ---------- */
+  $("tab24").onclick = () => { chartMode = "24h"; render(); };
+  $("tab14").onclick = () => { chartMode = "14d"; render(); };
+  function drawChart(A) {
+    $("tab24").setAttribute("aria-pressed", chartMode === "24h"); $("tab14").setAttribute("aria-pressed", chartMode === "14d");
+    $("charttitle").textContent = chartMode === "24h" ? "Last 24 hours · 5-minute" : "Last 14 days · 4-hour candles";
+    const svg = $("chart"), W = Math.max(280, svg.clientWidth || 600), H = 300, L = 8, R = 70, T = 12, B = 22;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const daily = chartMode === "24h";
+    const pts = daily ? M.m5 : M.h4;
+    const ts = pts.map((r) => r[0]);
+    let lo = daily ? Math.min(...pts.map((r) => r[1])) : Math.min(...pts.map((r) => r[3]));
+    let hi = daily ? Math.max(...pts.map((r) => r[1])) : Math.max(...pts.map((r) => r[2]));
+    const p = S.open, levels = [];
+    if (p) {
+      levels.push([p.entry, "var(--accent)", "Entry"], [p.tp, "var(--up)", "Target"], [p.stop, "var(--down)", "Stop"]);
+      lo = Math.min(lo, p.entry, p.stop, p.tp); hi = Math.max(hi, p.entry, p.stop, p.tp);
+    }
+    const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+    const x = (t) => L + (t - ts[0]) / (ts.at(-1) - ts[0]) * (W - L - R);
+    const y = (v) => T + (hi - v) / (hi - lo) * (H - T - B);
+    let g = "";
+    const step = [50, 100, 250, 500, 1000, 2000, 2500, 5000].find((s) => (hi - lo) / s <= 6) || 10000;
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${W - R + 6}" y="${y(v) + 3}">${(v / 1000).toFixed(step < 1000 ? 2 : 1)}k</text>`;
+    const nx = 5;
+    for (let i = 0; i <= nx; i++) {
+      const t = ts[0] + (ts.at(-1) - ts[0]) * i / nx, d = new Date(t);
+      const lab = daily ? d.toISOString().slice(11, 16) : d.toISOString().slice(5, 10);
+      g += `<text x="${x(t)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === nx ? "end" : "middle"}">${lab}</text>`;
+    }
+    const line = (vals, col, w) => `<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" points="${vals.map((v, i) => `${x(ts[i]).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}"/>`;
+    if (daily) {
+      const vals = pts.map((r) => r[1]);
+      g += `<polygon fill="var(--fg)" fill-opacity="0.05" points="${x(ts[0])},${H - B} ${vals.map((v, i) => `${x(ts[i]).toFixed(1)},${y(v).toFixed(1)}`).join(" ")} ${x(ts.at(-1))},${H - B}"/>`;
+      g += line(A.ema5[1], "var(--ema50)", 1.2) + line(A.ema5[0], "var(--ema20)", 1.2) + line(vals, "var(--fg)", 1.6);
+    } else {
+      const cw = Math.max(1.5, (W - L - R) / pts.length * 0.6);
+      g += pts.map(([t, o, h, l, c]) => { const col = c >= o ? "var(--up)" : "var(--down)"; return `<line x1="${x(t)}" x2="${x(t)}" y1="${y(h)}" y2="${y(l)}" stroke="${col}"/><rect x="${x(t) - cw / 2}" y="${y(Math.max(o, c))}" width="${cw}" height="${Math.max(1, Math.abs(y(o) - y(c)))}" fill="${col}"/>`; }).join("");
+      g += line(A.ema4[1], "var(--ema50)", 1.2) + line(A.ema4[0], "var(--ema20)", 1.2);
+    }
+    levels.forEach(([v, col, name]) => { g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${col}" stroke-dasharray="5 4"/><text x="${W - R - 4}" y="${y(v) - 4}" text-anchor="end" style="fill:${col}">${name} ${usd(v)}</text>`; });
+    if (p) {
+      const below = p.side === "long";
+      g += `<text x="${L + 4}" y="${below ? H - B - 6 : T + 10}" style="fill:var(--down)">Liquidation ${usd(p.liq)} ${below ? "↓" : "↑"} off chart</text>`;
+    }
+    const lx = x(ts.at(-1)), ly = y(A.px);
+    g += `<circle cx="${lx}" cy="${ly}" r="4" fill="var(--accent)"/><rect x="${W - R + 2}" y="${ly - 9}" width="${R - 4}" height="18" rx="3" fill="var(--accent)"/><text x="${W - R + 6}" y="${ly + 4}" style="fill:var(--bg);font-weight:500">${(A.px / 1000).toFixed(2)}k</text>`;
+    svg.innerHTML = g;
+  }
+  window.addEventListener("resize", () => { if (M) drawChart(analyze()); });
+
+  /* ---------- data ---------- */
+  const setSource = (kind, text) => { source = kind; const pill = $("srcpill"); pill.className = "pill " + (kind === "live" ? "live up" : kind === "snapshot" ? "" : "down"); pill.style.color = kind === "snapshot" ? "var(--accent)" : ""; $("srctext").textContent = text; };
+  const showUpdated = () => {
+    if (!M) return;
+    const age = Math.max(0, Math.round((Date.now() - M.updated) / 60000));
+    $("updated").textContent = `Price at ${new Date(M.updated).toISOString().slice(11, 16)} UTC · ${age < 1 ? "just now" : age + " min ago"}`;
+  };
+  setInterval(showUpdated, 15000);
+
+  async function getJSON(path) { const r = await fetch(API + path); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
+  async function loadSeries() {
+    const [mc, ohlc] = await Promise.all([getJSON("/coins/bitcoin/market_chart?vs_currency=usd&days=1"), getJSON("/coins/bitcoin/ohlc?vs_currency=usd&days=14")]);
+    return { m5: mc.prices, h4: ohlc };
+  }
+  async function loadSpot() {
+    const s = (await getJSON("/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true&include_last_updated_at=true")).bitcoin;
+    return { price: s.usd, change: s.usd_24h_change, updated: s.last_updated_at * 1000 };
+  }
+  async function startLive() {
+    const [series, spot] = await Promise.all([loadSeries(), loadSpot()]);
+    M = { ...spot, ...series };
+    setSource("live", "Live · every 20s"); render(); showUpdated();
+    setInterval(async () => {
+      try { const s = await loadSpot(); Object.assign(M, s); if (M.m5.at(-1)[0] < s.updated) M.m5.push([s.updated, s.price]); setSource("live", "Live · every 20s"); render(); showUpdated(); }
+      catch (e) { setSource("error", "Rate limited, retrying"); }
+    }, 20000);
+    setInterval(async () => { try { Object.assign(M, await loadSeries()); render(); } catch (e) {} }, 300000);
+  }
+  async function startSnapshot() {
+    const use = window.claude && window.claude.use;
+    const db = use ? await window.claude.use("db") : null;
+    if (!db) { setSource("error", "No data"); $("updated").textContent = "Open this page as a file in your browser for live prices."; return; }
+    setSource("snapshot", "Snapshot · pushed by Claude");
+    const timer = setTimeout(() => { if (!M) $("updated").textContent = "Can't reach the data store yet."; }, 10000);
+    db.doc("market/btc").onSnapshot((snap) => {
+      clearTimeout(timer);
+      if (!snap.exists) { $("updated").textContent = "No snapshot yet. Ask Claude to refresh."; return; }
+      const d = snap.data();
+      M = {
+        price: d.price, change: d.change, updated: d.updated,
+        m5: d.m5.t.map((t, i) => [t, d.m5.p[i]]),
+        h4: d.h4.t.map((t, i) => [t, d.h4.o[i], d.h4.h[i], d.h4.l[i], d.h4.c[i]]),
+      };
+      render(); showUpdated();
+    }, () => { clearTimeout(timer); setSource("error", "Data store unavailable"); });
+  }
+
+  (async () => {
+    try { await startLive(); }
+    catch (e) { startSnapshot(); }
+  })();
+})();
+</script>
